@@ -1,0 +1,75 @@
+name: Continuous Deployment
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '21.4.0'
+
+      - name: Install Dependencies on client locally
+        working-directory: client
+        run: npm install
+
+      - name: Build
+        working-directory: client
+        run: |
+          npm install
+          npm run build:prod
+
+      - name: Set up SSH for host key verification
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t rsa github.com >> ~/.ssh/known_hosts
+          ssh-keyscan -t rsa IP_ADDRESS >> ~/.ssh/known_hosts     
+
+      - name: Deploy to Lightsail
+        run: |
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 -r client/build/* bitnami@IP_ADDRESS:/home/bitnami/htdocs
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 -r server/api/* bitnami@IP_ADDRESS:/home/bitnami/server
+
+      - name: Install Dependencies on server side in lightsail
+        run: |
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 -r server/api* bitnami@IP_ADDRESS:/home/bitnami/server
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 bitnami@IP_ADDRESS "cd /home/bitnami/server && npm install && sudo /opt/bitnami/ctlscript.sh restart apache"
+
+      - name: Download "uploads" folder
+        run: scp -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 -r bitnami@IP_ADDRESS:/home/bitnami/server/uploads ./uploads
+
+      - name: Configure Git
+        run: |
+          git config --global user.email "EMAIL_ADDRESS"
+          git config --global user.name "USERNAME"
+
+      - name: Set up SSH for GitHub
+        run: |
+          echo "$SSH_PRIVATE_KEY_GIT_ACTION" > ~/.ssh/github_id_rsa
+          chmod 600 ~/.ssh/github_id_rsa
+          ssh-keyscan -t rsa github.com >> ~/.ssh/known_hosts
+
+      - name: Push changes to GitHub
+        run: |
+          git remote set-url origin GIT_REPOSITORY
+          git add uploads
+          git commit -m "Downloaded 'uploads' folder from AWS Lightsail"
+          git fetch
+          git checkout local
+          git push --set-upstream origin local
+
+    env:
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      SSH_PRIVATE_KEY_GIT_ACTION: ${{ secrets.SSH_PRIVATE_KEY_GIT_ACTION }}
+
